@@ -26,32 +26,62 @@ async def _call(model: str, messages: list, max_tokens: int, temperature: float 
         "temperature": temperature,
     }
     body = json.dumps(payload, ensure_ascii=False).encode()
-    async with httpx.AsyncClient(timeout=120) as client:
+    # Pro может думать долго — даём 15 минут
+    timeout = httpx.Timeout(900.0, connect=30.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(DEEPSEEK_URL, headers=_headers(), content=body)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
 
 def _clean_json(raw: str) -> str:
-    return raw.replace("```json", "").replace("```", "").strip()
+    """Извлекает JSON из ответа модели — устойчиво к тексту вокруг."""
+    import re
+    # Убираем markdown блоки
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    # Ищем первый { или [ и последний } или ]
+    start_obj = raw.find("{")
+    start_arr = raw.find("[")
+    
+    if start_obj == -1 and start_arr == -1:
+        return raw
+    
+    # Определяем с чего начинается JSON
+    if start_obj == -1:
+        start = start_arr
+        end_char = "]"
+    elif start_arr == -1:
+        start = start_obj
+        end_char = "}"
+    else:
+        if start_arr < start_obj:
+            start = start_arr
+            end_char = "]"
+        else:
+            start = start_obj
+            end_char = "}"
+    
+    end = raw.rfind(end_char)
+    if end == -1:
+        return raw[start:]
+    return raw[start:end+1]
 
 
 # ── Системный промпт ──────────────────────────────────────────────────────────
 
 PLAN_SYSTEM = """Ты эксперт по нутрициологии и планированию бюджета.
-Твоя задача — составить персональный план питания на неделю.
+Составь персональный план питания на неделю.
 
 ПРИНЦИПЫ:
-1. Оптимизируй по двум осям ОДНОВРЕМЕННО: бюджет + КБЖУ
-   Скор продукта = (КБЖУ_индекс / цена_за_100г) × 100
-   Выбирай продукты с максимальным скором
-2. Учитывай реальный ритм жизни — не планируй еду в дни доставки
-3. Продукты должны максимально пересекаться между блюдами
-4. Скоропорт — на неделю, долгохран — на месяц оптом
-5. Цель: снизить траты на еду до целевого бюджета
-6. Учитывай сезонность (текущий месяц: май)
+1. Оптимизируй бюджет + КБЖУ одновременно
+2. Не планируй еду в дни доставки пользователя
+3. Продукты должны пересекаться между блюдами
+4. Скоропорт — на неделю, долгохран — на месяц
+5. Цель — снизить траты до целевого бюджета
+6. Сезон: май (дешёвые овощи: огурцы, помидоры, зелень)
 
-ФОРМАТ ОТВЕТА — строго JSON, никакого текста вокруг."""
+ВАЖНО: Отвечай ТОЛЬКО валидным JSON без текста вокруг.
+Не используй reasoning/thinking теги в ответе — только JSON."""
 
 
 PLAN_SCHEMA = """{

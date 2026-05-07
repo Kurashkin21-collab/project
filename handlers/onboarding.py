@@ -278,7 +278,19 @@ async def _finish_onboarding(message: Message, state: FSMContext, tx_count: int)
     )
 
     # DeepSeek Pro строит первый план
-    plan = await analyze_onboarding(compressed)
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("Отправляем профиль в DeepSeek Pro...")
+    try:
+        plan = await analyze_onboarding(compressed)
+        logger.info(f"DeepSeek вернул план: {str(plan)[:200]}")
+    except Exception as e:
+        logger.error(f"Ошибка DeepSeek: {e}")
+        await message.answer(
+            f"❌ DeepSeek не смог построить план: {e}\n\n"
+            "Попробуй /recalc позже или напиши /reset и пройди онбординг заново."
+        )
+        return
 
     # Ищем цены на нужные продукты
     if plan.get("price_check_needed"):
@@ -332,4 +344,20 @@ async def _finish_onboarding(message: Message, state: FSMContext, tx_count: int)
         "Что дальше:",
         parse_mode="HTML",
         reply_markup=MAIN_KB
+    )
+
+@router.message(Command("reset"))
+async def cmd_reset(message: Message, state: FSMContext):
+    """Сброс онбординга — для повторного прохождения."""
+    import aiosqlite
+    from config import DATABASE_PATH
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE user_profile SET onboarding_done=0 WHERE user_id=?",
+            (message.from_user.id,)
+        )
+        await db.commit()
+    await state.clear()
+    await message.answer(
+        "🔄 Онбординг сброшен. Напиши /start чтобы начать заново."
     )
