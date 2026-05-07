@@ -25,13 +25,20 @@ async def _call(model: str, messages: list, max_tokens: int, temperature: float 
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    # Для Pro отключаем thinking — нам нужен чистый JSON без reasoning
+    if "pro" in model:
+        payload["thinking"] = {"type": "disabled"}
+    
     body = json.dumps(payload, ensure_ascii=False).encode()
-    # Pro может думать долго — даём 15 минут
     timeout = httpx.Timeout(900.0, connect=30.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(DEEPSEEK_URL, headers=_headers(), content=body)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        data = resp.json()
+        msg = data["choices"][0]["message"]
+        # content может быть пустым если включён thinking — берём reasoning_content
+        content = msg.get("content") or msg.get("reasoning_content") or ""
+        return content
 
 
 def _clean_json(raw: str) -> str:
