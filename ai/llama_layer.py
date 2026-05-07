@@ -421,3 +421,42 @@ def calculate_kbju(height: int, weight: float, age: int, goal: str) -> dict:
         "fat":     round(fat),
         "carbs":   round(carbs),
     }
+
+# ── Парсинг PDF выписки Т-Банка (Vision) ─────────────────────────────────────
+
+PARSE_PDF_PROMPT = """Ты читаешь PDF выписку из Т-Банка.
+Извлеки все расходные операции и верни ТОЛЬКО валидный JSON массив.
+Каждый элемент:
+{
+  "date": "ГГГГ-ММ-ДД",
+  "amount": число (положительное),
+  "shop": "название",
+  "category": "продукты / доставка / кафе / транспорт / развлечения / одежда / здоровье / связь / другое",
+  "description": "краткое описание"
+}
+Только расходы. Только JSON массив."""
+
+
+async def parse_pdf(pdf_bytes: bytes) -> list[dict]:
+    """Парсит PDF выписки Т-Банка через Vision."""
+    b64 = base64.b64encode(pdf_bytes).decode()
+    messages = [
+        {"role": "system", "content": PARSE_PDF_PROMPT},
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:application/pdf;base64,{b64}"}},
+            {"type": "text", "text": "Извлеки расходные операции. Верни только JSON массив."},
+        ]},
+    ]
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "max_tokens": TOKENS["parse_csv"],
+        "temperature": 0.1,
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(GROQ_URL, headers=_headers(), content=body)
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"]
+    return json.loads(_clean_json(raw))
+
