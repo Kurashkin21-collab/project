@@ -26,7 +26,7 @@ from database import (
     save_meal_plan, save_shopping_list, get_food_transactions,
 )
 from ai.llama_layer import (
-    parse_csv, build_profile_for_deepseek,
+    parse_csv, parse_pdf, build_profile_for_deepseek,
     format_plan_for_telegram, calculate_kbju,
 )
 from ai.deepseek_layer import analyze_onboarding
@@ -190,8 +190,9 @@ async def ob_delivery_days(message: Message, state: FSMContext):
     await state.set_state(Onboarding.upload_csv)
     await message.answer(
         "📂 <b>Последний шаг — загрузи выписку из Т-Банка</b>\n\n"
-        "Как выгрузить:\n"
-        "Т-Банк → выбери карту → <i>Детали</i> → <i>Выписка</i> → скачай CSV\n\n"
+        "Принимаю <b>PDF</b> и <b>CSV</b>:\n\n"
+        "📱 <b>Приложение</b> → карта → Детали → Выписка → PDF\n"
+        "💻 <b>Веб</b> (tbank.ru) → счёт → Выписка → CSV\n\n"
         "Это нужно чтобы бот понял твои паттерны трат и сразу построил точный план.\n\n"
         "<i>Если не хочешь — напиши <b>пропустить</b></i>",
         parse_mode="HTML"
@@ -201,20 +202,31 @@ async def ob_delivery_days(message: Message, state: FSMContext):
 @router.message(Onboarding.upload_csv, F.document)
 async def ob_csv_upload(message: Message, state: FSMContext):
     wait = await message.answer("⏳ Анализирую выписку...")
+    fname = (message.document.file_name or "").lower()
     try:
-        file   = await message.bot.get_file(message.document.file_id)
-        raw    = await message.bot.download_file(file.file_path)
-        csv_text = raw.read().decode("utf-8", errors="ignore")
+        file = await message.bot.get_file(message.document.file_id)
+        raw  = await message.bot.download_file(file.file_path)
+        data = raw.read()
 
-        # Лама парсит CSV
-        transactions = await parse_csv(csv_text)
+        if fname.endswith(".pdf"):
+            # PDF — парсим через Groq Vision
+            await wait.edit_text("⏳ Читаю PDF через AI (может занять до минуты)...")
+            transactions = await parse_pdf(data)
+        else:
+            # CSV — парсим как текст
+            csv_text = data.decode("utf-8", errors="ignore")
+            transactions = await parse_csv(csv_text)
+
         await add_transactions_bulk(message.from_user.id, transactions)
-
         await wait.edit_text(f"✅ Загружено {len(transactions)} операций. Строю план...")
         await _finish_onboarding(message, state, len(transactions))
 
     except Exception as e:
-        await wait.edit_text(f"❌ Ошибка при чтении файла: {e}\nПопробуй ещё раз или напиши <b>пропустить</b>", parse_mode="HTML")
+        await wait.edit_text(
+            f"❌ Ошибка при чтении файла: {e}\n"
+            "Попробуй ещё раз или напиши <b>пропустить</b>",
+            parse_mode="HTML"
+        )
 
 
 @router.message(Onboarding.upload_csv, F.text.lower().contains("пропустить"))

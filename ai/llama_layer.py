@@ -42,31 +42,122 @@ def _clean_json(raw: str) -> str:
     return raw.replace("```json", "").replace("```", "").strip()
 
 
-# ── Парсинг CSV выписки Т-Банка ───────────────────────────────────────────────
+# ── Парсинг CSV выписки Т-Банка (Python, без AI) ────────────────────────────
 
-PARSE_CSV_PROMPT = """Ты парсишь выписку банка Т-Банк (Тинькофф) из CSV.
-Извлеки все расходные операции и верни ТОЛЬКО валидный JSON массив.
+import csv as _csv
+import io as _io
+from datetime import datetime as _dt
 
-Каждый элемент:
-{
-  "date": "ГГГГ-ММ-ДД",
-  "amount": число (всегда положительное),
-  "shop": "название магазина/сервиса",
-  "category": "одна из: продукты / доставка / кафе / транспорт / развлечения / одежда / здоровье / связь / другое",
-  "description": "краткое описание"
+_CATEGORY_MAP = {
+    "продукты": [
+        "pyaterochka", "пятёрочка", "пятерочка", "perekrestok",
+        "перекрёсток", "перекресток", "magnit", "магнит",
+        "vkusvill", "вкусвилл", "lenta", "лента", "auchan", "ашан",
+        "metro", "okei", "окей", "azbuka", "азбука", "diksi", "дикси",
+        "chizhik", "чижик", "sbermarket", "сбермаркет", "globus", "глобус",
+        "bristol", "бристоль", "красное белое", "fix price", "фикс прайс",
+    ],
+    "доставка": [
+        "samokat", "самокат", "yandex.lavka", "lavka", "лавка",
+        "delivery", "доставка", "yandex eda", "яндекс еда",
+        "sber market", "sbermarket", "купер", "kuper",
+    ],
+    "кафе": [
+        "kfc", "кфс", "mcdonalds", "макдо", "burger", "бургер",
+        "sushi", "суши", "pizza", "пицца", "shaurma", "шаурма",
+        "кафе", "ресторан", "столовая", "coffee", "кофе", "starbucks",
+        "вкусно", "теремок", "dominos", "додо",
+    ],
+    "транспорт": [
+        "metro", "метро", "taxi", "такси", "uber", "яндекс такси",
+        "citymobil", "каршеринг", "bus", "автобус", "rzd", "ржд",
+        "aeroexpress", "аэроэкспресс", "troika", "тройка",
+    ],
+    "развлечения": [
+        "kino", "кино", "театр", "steam", "netflix", "spotify",
+        "apple", "google play", "playstation", "xbox", "concert",
+    ],
+    "одежда": [
+        "wildberries", "вб", "ozon", "озон", "lamoda", "zara",
+        "h&m", "adidas", "nike", "спортмастер",
+    ],
+    "здоровье": [
+        "apteka", "аптека", "pharmacy", "клиника", "стоматолог",
+        "медицин", "больниц",
+    ],
+    "связь": [
+        "mts", "мтс", "beeline", "билайн", "megafon", "мегафон",
+        "tele2", "теле2", "yota", "интернет",
+    ],
 }
 
-Только расходы (не пополнения). Только JSON массив, никакого текста."""
+_SKIP_WORDS = [
+    "внутренний перевод", "внутрибанковский", "перевод для пополнения",
+    "пополнение", "возврат", "кэшбэк", "cashback", "проценты",
+    "страховка", "обслуживание счёта", "обслуживание карты",
+    "снятие наличных", "пополнение через",
+]
+
+
+def _categorize(desc: str) -> str:
+    d = desc.lower()
+    for cat, keywords in _CATEGORY_MAP.items():
+        if any(kw in d for kw in keywords):
+            return cat
+    return "другое"
+
+
+def _parse_date(s: str) -> str:
+    try:
+        return _dt.strptime(s.strip()[:10], "%d.%m.%Y").strftime("%Y-%m-%d")
+    except Exception:
+        return ""
 
 
 async def parse_csv(csv_text: str) -> list[dict]:
-    """Парсит CSV выписки и возвращает список транзакций."""
-    messages = [
-        {"role": "system", "content": PARSE_CSV_PROMPT},
-        {"role": "user", "content": csv_text[:20000]},  # обрезаем на всякий случай
-    ]
-    raw = await _call(messages, TOKENS["parse_csv"])
-    return json.loads(_clean_json(raw))
+    """Парсит CSV выписки Т-Банка напрямую через Python (без AI)."""
+    # Убираем BOM если есть
+    csv_text = csv_text.lstrip("\ufeff")
+    reader = _csv.reader(_io.StringIO(csv_text), delimiter=";")
+
+    transactions = []
+    for i, row in enumerate(reader):
+        if i == 0:
+            continue  # пропускаем заголовок
+        if len(row) < 5:
+            continue
+
+        date_str   = row[0]
+        amount_str = row[2].replace(",", ".").replace(" ", "").replace("\xa0", "")
+        desc       = row[4].strip() if len(row) > 4 else ""
+
+        try:
+            amount = float(amount_str)
+        except Exception:
+            continue
+
+        # Только расходы (отрицательные суммы)
+        if amount >= 0:
+            continue
+
+        # Пропускаем служебные операции
+        if any(w in desc.lower() for w in _SKIP_WORDS):
+            continue
+
+        d = _parse_date(date_str)
+        if not d:
+            continue
+
+        transactions.append({
+            "date":        d,
+            "amount":      abs(amount),
+            "shop":        desc,
+            "category":    _categorize(desc),
+            "description": desc,
+            "source":      "csv",
+        })
+
+    return transactions
 
 
 # ── Парсинг пуша от банка ─────────────────────────────────────────────────────
